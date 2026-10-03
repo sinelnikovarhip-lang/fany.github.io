@@ -1,0 +1,682 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8" />
+<title>Space Station Runner</title>
+<style>
+  html,body{margin:0;padding:0;overflow:hidden;background:#050510;font-family:'Segoe UI',sans-serif;color:#8ef}
+  #ui{position:absolute;top:10px;left:10px;z-index:10;font-size:18px;text-shadow:0 0 8px #0ff}
+  #ui b{color:#fff}
+  #hint{position:absolute;bottom:10px;left:50%;transform:translateX(-50%);font-size:14px;opacity:.7}
+  #gameover{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);
+    background:rgba(5,5,16,.85);padding:30px 50px;border:1px solid #0ff;border-radius:10px;
+    text-align:center;display:none;box-shadow:0 0 30px #0ff}
+  #gameover h1{margin:0 0 10px;color:#0ff;text-shadow:0 0 10px #0ff}
+  #gameover button{margin-top:15px;padding:10px 25px;background:#0ff;color:#000;border:none;
+    font-weight:bold;cursor:pointer;border-radius:5px;font-size:16px}
+  canvas{display:block}
+</style>
+</head>
+<body>
+<div id="ui">
+  <div>SCORE: <b id="score">0</b></div>
+  <div>ENERGY: <b id="energy">0</b></div>
+  <div>SPEED: <b id="speed">0</b></div>
+</div>
+<div id="hint">← → / A D — смена полосы &nbsp;•&nbsp; ↑ / W / SPACE — прыжок &nbsp;•&nbsp; Свайпы на мобильном</div>
+<div id="gameover">
+  <h1>SYSTEM FAILURE</h1>
+  <div>Final Score: <b id="finalScore">0</b></div>
+  <button onclick="restart()">REBOOT</button>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+
+// ============ СЦЕНА ============
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x050510);
+scene.fog = new THREE.Fog(0x050510, 25, 95);
+
+const camera = new THREE.PerspectiveCamera(65, innerWidth/innerHeight, 0.1, 200);
+camera.position.set(0, 5.5, 9);
+camera.lookAt(0, 1.2, -5);
+
+const renderer = new THREE.WebGLRenderer({antialias:true});
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.1;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+document.body.appendChild(renderer.domElement);
+
+addEventListener('resize',()=>{
+  camera.aspect = innerWidth/innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth,innerHeight);
+});
+
+// ============ ОСВЕЩЕНИЕ ============
+scene.add(new THREE.HemisphereLight(0x3366aa, 0x050510, 0.55));
+scene.add(new THREE.AmbientLight(0x223355, 0.4));
+
+const dir = new THREE.DirectionalLight(0xaaccff, 1.3);
+dir.position.set(8, 20, 6);
+dir.castShadow = true;
+dir.shadow.mapSize.set(2048,2048);
+dir.shadow.camera.left = -25; dir.shadow.camera.right = 25;
+dir.shadow.camera.top = 25; dir.shadow.camera.bottom = -25;
+dir.shadow.camera.near = 1; dir.shadow.camera.far = 60;
+dir.shadow.bias = -0.0005;
+scene.add(dir);
+scene.add(dir.target);
+
+// ============ ЗВЁЗДЫ ============
+const starGeo = new THREE.BufferGeometry();
+const starPos = [];
+for(let i=0;i<2000;i++){
+  starPos.push((Math.random()-0.5)*400, Math.random()*200+30, (Math.random()-0.5)*400);
+}
+starGeo.setAttribute('position', new THREE.Float32BufferAttribute(starPos,3));
+const stars = new THREE.Points(starGeo, new THREE.PointsMaterial({color:0xffffff,size:0.4,transparent:true,opacity:0.9}));
+scene.add(stars);
+
+// ============ КОНСТАНТЫ ДОРОГИ ============
+const LANE_W = 1.8;
+const LANES = [-LANE_W, 0, LANE_W];
+const ROAD_W = LANE_W*3 + 0.8;
+const SEG_LEN = 10;
+const SEG_COUNT = 12;
+
+// ============ МАТЕРИАЛЫ ============
+const matMetal = new THREE.MeshStandardMaterial({color:0x2a2f3a, metalness:0.9, roughness:0.35});
+const matMetalDark = new THREE.MeshStandardMaterial({color:0x15181f, metalness:0.95, roughness:0.5});
+const matLed = new THREE.MeshStandardMaterial({color:0x00ccff, emissive:0x00ccff, emissiveIntensity:2.2, metalness:0.5, roughness:0.2});
+const matLedRed = new THREE.MeshStandardMaterial({color:0xff2244, emissive:0xff2244, emissiveIntensity:2.0});
+const matCable = new THREE.MeshStandardMaterial({color:0x111318, metalness:0.8, roughness:0.6});
+const matLaser = new THREE.MeshStandardMaterial({color:0x00ffff, emissive:0x00ffff, emissiveIntensity:3.0, transparent:true, opacity:0.85});
+const matOrb = new THREE.MeshStandardMaterial({color:0x00ddff, emissive:0x00ccff, emissiveIntensity:2.5, metalness:0.9, roughness:0.15});
+const matBio = new THREE.MeshStandardMaterial({color:0x556b2f, metalness:0.4, roughness:0.6});
+const matBioStripe = new THREE.MeshStandardMaterial({color:0xffcc00, emissive:0x332200, emissiveIntensity:0.5});
+
+// ============ ДОРОГА (СГЕНЕРИРОВАННЫЕ СЕГМЕНТЫ) ============
+const roadGroup = new THREE.Group();
+scene.add(roadGroup);
+
+function buildRoadSegment(){
+  const g = new THREE.Group();
+
+  // Основание — металлическая обшивка
+  const base = new THREE.Mesh(new THREE.BoxGeometry(ROAD_W, 0.25, SEG_LEN), matMetal);
+  base.position.set(0, -0.125, 0);
+  base.receiveShadow = true;
+  g.add(base);
+
+  // Решётки — поперечные полосы
+  for(let i=0;i<6;i++){
+    const grate = new THREE.Mesh(new THREE.BoxGeometry(ROAD_W*0.98, 0.03, 0.08), matMetalDark);
+    grate.position.set(0, 0.01, -SEG_LEN/2 + 1 + i*1.6);
+    g.add(grate);
+  }
+  // Продольные решётки
+  for(let k=-1;k<=1;k+=2){
+    const lg = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.03, SEG_LEN*0.95), matMetalDark);
+    lg.position.set(k*ROAD_W*0.35, 0.01, 0);
+    g.add(lg);
+  }
+
+  // Голубые светодиодные полосы между полосами
+  for(let i=-1;i<=1;i+=2){
+    const led = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.05, SEG_LEN), matLed);
+    led.position.set(i*LANE_W*0.5, 0.03, 0);
+    g.add(led);
+  }
+
+  // Отбойники по краям
+  for(let side=-1;side<=1;side+=2){
+    const rail = new THREE.Mesh(new THREE.BoxGeometry(0.25, 0.8, SEG_LEN), matMetal);
+    rail.position.set(side*(ROAD_W/2 + 0.12), 0.4, 0);
+    rail.castShadow = true; rail.receiveShadow = true;
+    g.add(rail);
+
+    // Светящиеся вставки на отбойниках
+    for(let j=0;j<4;j++){
+      const ins = new THREE.Mesh(new THREE.BoxGeometry(0.27, 0.1, 0.6), matLed);
+      ins.position.set(side*(ROAD_W/2 + 0.12), 0.7, -SEG_LEN/2 + 1.5 + j*2.5);
+      g.add(ins);
+    }
+
+    // Толстые кабели
+    const cable = new THREE.Mesh(new THREE.CylinderGeometry(0.12,0.12,SEG_LEN,10), matCable);
+    cable.rotation.x = Math.PI/2;
+    cable.position.set(side*(ROAD_W/2 + 0.55), 0.2, 0);
+    g.add(cable);
+    const cable2 = new THREE.Mesh(new THREE.CylinderGeometry(0.08,0.08,SEG_LEN,10), matCable);
+    cable2.rotation.x = Math.PI/2;
+    cable2.position.set(side*(ROAD_W/2 + 0.85), 0.5, 0);
+    g.add(cable2);
+  }
+
+  return g;
+}
+
+const roadSegments = [];
+for(let i=0;i<SEG_COUNT;i++){
+  const seg = buildRoadSegment();
+  seg.position.z = -i*SEG_LEN;
+  roadGroup.add(seg);
+  roadSegments.push(seg);
+}
+
+// ============ ПРОЦЕДУРНЫЙ ДЕКОР СБОКУ ============
+const decorGroup = new THREE.Group();
+scene.add(decorGroup);
+const decorChunks = [];
+
+function buildDecorChunk(z){
+  const g = new THREE.Group();
+  g.position.z = z;
+
+  for(let side=-1;side<=1;side+=2){
+    // Отсек станции
+    const moduleCount = 2 + Math.floor(Math.random()*3);
+    let curZ = -SEG_LEN*1.5;
+    for(let m=0;m<moduleCount;m++){
+      const w = 2 + Math.random()*3;
+      const h = 3 + Math.random()*6;
+      const d = 3 + Math.random()*4;
+      const mod = new THREE.Mesh(new THREE.BoxGeometry(w,h,d), matMetal);
+      mod.position.set(side*(ROAD_W/2 + 2 + Math.random()*2), h/2, curZ);
+      mod.castShadow = true; mod.receiveShadow = true;
+      g.add(mod);
+
+      // Иллюминаторы
+      const portholes = 2 + Math.floor(Math.random()*4);
+      for(let p=0;p<portholes;p++){
+        const ph = new THREE.Mesh(
+          new THREE.CircleGeometry(0.18, 12),
+          Math.random() < 0.7 ? matLed : matLedRed
+        );
+        const py = 0.8 + Math.random()*(h-1.2);
+        const pz = curZ - d/2 + 0.5 + Math.random()*(d-1);
+        ph.position.set(side*(ROAD_W/2 + 2 + Math.random()*2) + side*w/2*1.01, py, pz);
+        ph.rotation.y = side*Math.PI/2;
+        g.add(ph);
+      }
+
+      // Аварийный терминал
+      if(Math.random() < 0.5){
+        const term = new THREE.Mesh(new THREE.BoxGeometry(0.5,0.8,0.2), matMetalDark);
+        term.position.set(side*(ROAD_W/2 + 1.5), 0.8, curZ);
+        g.add(term);
+        const screen = new THREE.Mesh(new THREE.PlaneGeometry(0.4,0.5), Math.random()<0.5?matLed:matLedRed);
+        screen.position.set(side*(ROAD_W/2 + 1.5) - side*0.11, 0.85, curZ);
+        screen.rotation.y = -side*Math.PI/2;
+        g.add(screen);
+      }
+
+      // Антенна / солнечная батарея
+      if(Math.random() < 0.6){
+        const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.05,0.05,2+Math.random()*3,6), matMetalDark);
+        pole.position.set(side*(ROAD_W/2 + 2 + Math.random()*2), h + 1, curZ);
+        g.add(pole);
+        if(Math.random() < 0.5){
+          // Солнечная батарея
+          const panel = new THREE.Mesh(new THREE.BoxGeometry(1.5,0.05,0.8),
+            new THREE.MeshStandardMaterial({color:0x001133, metalness:0.9, roughness:0.2, emissive:0x001144, emissiveIntensity:0.3}));
+          panel.position.set(side*(ROAD_W/2 + 2 + Math.random()*2), h + 2.5, curZ);
+          panel.rotation.z = side*0.2;
+          g.add(panel);
+        } else {
+          // Антенна-тарелка
+          const dish = new THREE.Mesh(new THREE.SphereGeometry(0.5, 12, 8, 0, Math.PI*2, 0, Math.PI/2), matMetal);
+          dish.position.set(side*(ROAD_W/2 + 2 + Math.random()*2), h + 2.5, curZ);
+          dish.rotation.x = Math.PI;
+          g.add(dish);
+        }
+      }
+
+      curZ += d + 0.5;
+    }
+
+    // Лазерные стойки вдоль пути
+    for(let j=0;j<3;j++){
+      const post = new THREE.Mesh(new THREE.CylinderGeometry(0.08,0.08,2.5,8), matMetalDark);
+      post.position.set(side*(ROAD_W/2 + 1.2), 1.25, -SEG_LEN + j*SEG_LEN/2.5);
+      g.add(post);
+      const head = new THREE.Mesh(new THREE.SphereGeometry(0.15,8,6), matLed);
+      head.position.set(side*(ROAD_W/2 + 1.2), 2.6, -SEG_LEN + j*SEG_LEN/2.5);
+      g.add(head);
+    }
+  }
+
+  decorGroup.add(g);
+  decorChunks.push(g);
+}
+
+for(let i=0;i<8;i++){
+  buildDecorChunk(-i*SEG_LEN*2);
+}
+
+// ============ ИГРОК ============
+const player = new THREE.Group();
+scene.add(player);
+let playerBaseY = 0;
+
+const loader = new GLTFLoader();
+loader.load('player_game.glb', (gltf)=>{
+  const model = gltf.scene;
+  // Масштаб под высоту 2.0
+  const box = new THREE.Box3().setFromObject(model);
+  const size = new THREE.Vector3();
+  box.getSize(size);
+  const scale = 2.0 / size.y;
+  model.scale.setScalar(scale);
+
+  // Пересчёт bounding box после масштабирования
+  const box2 = new THREE.Box3().setFromObject(model);
+  playerBaseY = -box2.min.y;
+
+  model.position.y = playerBaseY;
+
+  // Разворот лицом вперёд (-Z)
+  model.rotation.y = Math.PI;
+
+  // Тени на всех мешах
+  model.traverse((obj)=>{
+    if(obj.isMesh){
+      obj.castShadow = true;
+      obj.receiveShadow = true;
+    }
+  });
+
+  player.add(model);
+  player.position.set(LANES[1], 0, 0);
+}, undefined, (err)=>{
+  console.warn('Не удалось загрузить player_game.glb, используется куб-заглушка', err);
+  const fallback = new THREE.Mesh(new THREE.BoxGeometry(0.8,1.8,0.8),
+    new THREE.MeshStandardMaterial({color:0x00ccff, emissive:0x0066aa, emissiveIntensity:0.6}));
+  fallback.position.y = 0.9;
+  fallback.castShadow = true;
+  player.add(fallback);
+  player.position.set(LANES[1], 0, 0);
+});
+
+// ============ СОСТОЯНИЕ ИГРЫ ============
+const state = {
+  running: true,
+  speed: 14,
+  maxSpeed: 32,
+  score: 0,
+  energy: 0,
+  lane: 1,
+  targetX: 0,
+  vy: 0,
+  jumping: false,
+  gravity: -28,
+  jumpPower: 11,
+  spawnTimer: 0,
+  coinTimer: 0,
+  distance: 0,
+};
+
+// ============ ПРЕПЯТСТВИЯ И МОНЕТЫ ============
+const obstacles = [];
+const coins = [];
+
+function spawnObstacle(){
+  const lane = Math.floor(Math.random()*3);
+  const type = Math.random() < 0.5 ? 'laser' : 'bio';
+  const g = new THREE.Group();
+
+  if(type === 'laser'){
+    // Высокая лазерная перегородка — обходить
+    const post1 = new THREE.Mesh(new THREE.CylinderGeometry(0.1,0.1,2.8,8), matMetalDark);
+    post1.position.set(-0.6, 1.4, 0);
+    post1.castShadow = true;
+    g.add(post1);
+    const post2 = new THREE.Mesh(new THREE.CylinderGeometry(0.1,0.1,2.8,8), matMetalDark);
+    post2.position.set(0.6, 1.4, 0);
+    post2.castShadow = true;
+    g.add(post2);
+    const beam = new THREE.Mesh(new THREE.BoxGeometry(1.2, 2.4, 0.12), matLaser);
+    beam.position.set(0, 1.4, 0);
+    g.add(beam);
+    // Тонкие лазеры
+    for(let i=0;i<3;i++){
+      const l = new THREE.Mesh(new THREE.BoxGeometry(1.2, 0.05, 0.05), matLaser);
+      l.position.set(0, 0.5 + i*0.9, 0);
+      g.add(l);
+    }
+    g.userData = {type:'laser', lane, height:2.8, low:false};
+  } else {
+    // Низкий ящик биоопасности — перепрыгивать
+    const box = new THREE.Mesh(new THREE.BoxGeometry(1.3, 0.9, 1.3), matBio);
+    box.position.set(0, 0.45, 0);
+    box.castShadow = true;
+    g.add(box);
+    // Полосы
+    for(let i=0;i<3;i++){
+      const s = new THREE.Mesh(new THREE.BoxGeometry(1.32, 0.08, 1.32), matBioStripe);
+      s.position.set(0, 0.15 + i*0.3, 0);
+      g.add(s);
+    }
+    // Знак биоопасности
+    const sign = new THREE.Mesh(new THREE.CircleGeometry(0.2, 16), matLedRed);
+    sign.position.set(0, 0.7, 0.66);
+    g.add(sign);
+    g.userData = {type:'bio', lane, height:0.9, low:true};
+  }
+
+  g.position.set(LANES[lane], 0, -80);
+  scene.add(g);
+  obstacles.push(g);
+}
+
+function spawnCoin(){
+  const lane = Math.floor(Math.random()*3);
+  const g = new THREE.Group();
+  const orb = new THREE.Mesh(new THREE.SphereGeometry(0.3, 16, 12), matOrb);
+  orb.castShadow = true;
+  g.add(orb);
+  // Внешнее кольцо
+  const ring = new THREE.Mesh(new THREE.TorusGeometry(0.45, 0.04, 8, 24), matLed);
+  ring.rotation.x = Math.PI/2;
+  g.add(ring);
+  // Свечение
+  const glow = new THREE.PointLight(0x00ccff, 1.2, 3);
+  g.add(glow);
+  g.position.set(LANES[lane], 1.2, -80);
+  g.userData = {lane, collected:false};
+  scene.add(g);
+  coins.push(g);
+}
+
+// ============ ЧАСТИЦЫ ============
+const particles = [];
+function explodeAt(x,y,z){
+  const count = 40;
+  for(let i=0;i<count;i++){
+    const size = 0.08 + Math.random()*0.12;
+    const m = new THREE.Mesh(
+      new THREE.BoxGeometry(size,size,size),
+      new THREE.MeshStandardMaterial({
+        color: Math.random()<0.5 ? 0x00ccff : 0x88ffff,
+        emissive: 0x00aaff,
+        emissiveIntensity: 2.5
+      })
+    );
+    m.position.set(x,y,z);
+    const sp = 4 + Math.random()*6;
+    const ang = Math.random()*Math.PI*2;
+    m.userData = {
+      vx: Math.cos(ang)*sp*(0.5+Math.random()),
+      vy: 2 + Math.random()*6,
+      vz: Math.sin(ang)*sp*(0.5+Math.random()) - 2,
+      life: 1.0
+    };
+    scene.add(m);
+    particles.push(m);
+  }
+}
+
+// ============ УПРАВЛЕНИЕ ============
+function changeLane(dir){
+  if(!state.running) return;
+  state.lane = Math.max(0, Math.min(2, state.lane + dir));
+  state.targetX = LANES[state.lane];
+}
+function jump(){
+  if(!state.running) return;
+  if(!state.jumping){
+    state.jumping = true;
+    state.vy = state.jumpPower;
+  }
+}
+
+addEventListener('keydown',(e)=>{
+  if(e.code==='ArrowLeft'||e.code==='KeyA') changeLane(-1);
+  else if(e.code==='ArrowRight'||e.code==='KeyD') changeLane(1);
+  else if(e.code==='ArrowUp'||e.code==='KeyW'||e.code==='Space'){ e.preventDefault(); jump(); }
+});
+
+let touchStart = null;
+addEventListener('touchstart',(e)=>{ touchStart = {x:e.touches[0].clientX, y:e.touches[0].clientY}; });
+addEventListener('touchend',(e)=>{
+  if(!touchStart) return;
+  const t = e.changedTouches[0];
+  const dx = t.clientX - touchStart.x;
+  const dy = t.clientY - touchStart.y;
+  if(Math.abs(dx) > Math.abs(dy)){
+    if(Math.abs(dx) > 30) changeLane(dx>0?1:-1);
+  } else {
+    if(dy < -30) jump();
+  }
+  touchStart = null;
+});
+
+// ============ СТОЛКНОВЕНИЯ ============
+function checkCollisions(){
+  const px = player.position.x;
+  const py = player.position.y;
+  const pz = player.position.z;
+
+  // Препятствия
+  for(let i=obstacles.length-1;i>=0;i--){
+    const o = obstacles[i];
+    const dx = Math.abs(o.position.x - px);
+    const dz = Math.abs(o.position.z - pz);
+    if(dx < 0.9 && dz < 0.9){
+      const data = o.userData;
+      // Если низкий объект (bio) — можно перепрыгнуть
+      if(data.low && py > 1.0){
+        // перепрыгнул
+        continue;
+      }
+      // Столкновение
+      explodeAt(o.position.x, o.position.y + 1, o.position.z);
+      scene.remove(o);
+      obstacles.splice(i,1);
+      gameOver();
+      return;
+    }
+  }
+
+  // Монеты
+  for(let i=coins.length-1;i>=0;i--){
+    const c = coins[i];
+    if(c.userData.collected) continue;
+    const dx = Math.abs(c.position.x - px);
+    const dy = Math.abs(c.position.y - (py+1));
+    const dz = Math.abs(c.position.z - pz);
+    if(dx < 0.9 && dy < 1.2 && dz < 0.9){
+      c.userData.collected = true;
+      scene.remove(c);
+      coins.splice(i,1);
+      state.energy++;
+      state.score += 50;
+      // Маленький взрыв при сборе
+      for(let k=0;k<10;k++){
+        const m = new THREE.Mesh(new THREE.BoxGeometry(0.06,0.06,0.06),
+          new THREE.MeshStandardMaterial({color:0x00ffff,emissive:0x00ffff,emissiveIntensity:3}));
+        m.position.copy(c.position);
+        m.userData = {vx:(Math.random()-0.5)*4,vy:Math.random()*3,vz:(Math.random()-0.5)*4,life:0.6};
+        scene.add(m);
+        particles.push(m);
+      }
+    }
+  }
+}
+
+// ============ GAME OVER / RESTART ============
+function gameOver(){
+  state.running = false;
+  document.getElementById('finalScore').textContent = Math.floor(state.score);
+  document.getElementById('gameover').style.display = 'block';
+}
+
+window.restart = function(){
+  // Очистка препятствий и монет
+  obstacles.forEach(o=>scene.remove(o));
+  obstacles.length = 0;
+  coins.forEach(c=>scene.remove(c));
+  coins.length = 0;
+  particles.forEach(p=>scene.remove(p));
+  particles.length = 0;
+
+  state.running = true;
+  state.speed = 14;
+  state.score = 0;
+  state.energy = 0;
+  state.lane = 1;
+  state.targetX = LANES[1];
+  state.vy = 0;
+  state.jumping = false;
+  state.spawnTimer = 0;
+  state.coinTimer = 0;
+  state.distance = 0;
+  player.position.set(LANES[1], playerBaseY, 0);
+  document.getElementById('gameover').style.display = 'none';
+};
+
+// ============ ИГРОВОЙ ЦИКЛ ============
+const clock = new THREE.Clock();
+const scoreEl = document.getElementById('score');
+const energyEl = document.getElementById('energy');
+const speedEl = document.getElementById('speed');
+
+function update(dt){
+  if(!state.running) return;
+
+  // Ускорение
+  state.speed = Math.min(state.maxSpeed, state.speed + dt*0.3);
+  const move = state.speed * dt;
+  state.distance += move;
+  state.score += dt * state.speed * 0.5;
+
+  // Движение дороги
+  roadSegments.forEach(s=>{
+    s.position.z += move;
+    if(s.position.z > SEG_LEN){
+      s.position.z -= SEG_LEN * SEG_COUNT;
+    }
+  });
+
+  // Движение декора
+  decorChunks.forEach(c=>{
+    c.position.z += move;
+    if(c.position.z > SEG_LEN*2){
+      c.position.z -= SEG_LEN*16;
+    }
+  });
+
+  // Движение игрока по полосе (lerp)
+  player.position.x += (state.targetX - player.position.x) * Math.min(1, dt*12);
+
+  // Прыжок
+  if(state.jumping){
+    state.vy += state.gravity * dt;
+    player.position.y += state.vy * dt;
+    if(player.position.y <= playerBaseY){
+      player.position.y = playerBaseY;
+      state.vy = 0;
+      state.jumping = false;
+    }
+  } else {
+    player.position.y = playerBaseY;
+  }
+
+  // Лёгкое покачивание при беге
+  if(!state.jumping && player.children[0]){
+    player.children[0].rotation.z = Math.sin(state.distance*0.8)*0.03;
+  }
+
+  // Движение препятствий
+  for(let i=obstacles.length-1;i>=0;i--){
+    obstacles[i].position.z += move;
+    if(obstacles[i].position.z > 5){
+      scene.remove(obstacles[i]);
+      obstacles.splice(i,1);
+    }
+  }
+
+  // Движение монет + вращение
+  for(let i=coins.length-1;i>=0;i--){
+    const c = coins[i];
+    c.position.z += move;
+    c.rotation.y += dt*3;
+    c.children[0].position.y = Math.sin(performance.now()*0.003 + c.position.x)*0.1;
+    if(c.position.z > 5){
+      scene.remove(c);
+      coins.splice(i,1);
+    }
+  }
+
+  // Спавн препятствий
+  state.spawnTimer -= dt;
+  if(state.spawnTimer <= 0){
+    spawnObstacle();
+    state.spawnTimer = 1.2 + Math.random()*1.2 - state.speed*0.02;
+    if(state.spawnTimer < 0.5) state.spawnTimer = 0.5;
+  }
+
+  // Спавн монет
+  state.coinTimer -= dt;
+  if(state.coinTimer <= 0){
+    const count = 1 + Math.floor(Math.random()*3);
+    for(let i=0;i<count;i++){
+      setTimeout(()=>spawnCoin(), i*150);
+    }
+    state.coinTimer = 1.5 + Math.random()*1.5;
+  }
+
+  // Частицы
+  for(let i=particles.length-1;i>=0;i--){
+    const p = particles[i];
+    const d = p.userData;
+    p.position.x += d.vx*dt;
+    p.position.y += d.vy*dt;
+    p.position.z += d.vz*dt;
+    d.vy -= 12*dt; // гравитация
+    d.life -= dt;
+    p.scale.setScalar(Math.max(0.01, d.life));
+    if(d.life <= 0 || p.position.y < -2){
+      scene.remove(p);
+      particles.splice(i,1);
+    }
+  }
+
+  // Столкновения
+  checkCollisions();
+
+  // Звёзды медленно движутся
+  stars.rotation.y += dt*0.01;
+
+  // UI
+  scoreEl.textContent = Math.floor(state.score);
+  energyEl.textContent = state.energy;
+  speedEl.textContent = state.speed.toFixed(1);
+}
+
+function animate(){
+  requestAnimationFrame(animate);
+  const dt = Math.min(0.05, clock.getDelta());
+  update(dt);
+  renderer.render(scene, camera);
+}
+animate();
+</script>
+</body>
+</html>
